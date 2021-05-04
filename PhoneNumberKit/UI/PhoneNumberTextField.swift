@@ -1,527 +1,255 @@
-//
-//  PhoneNumberTextField.swift
-//  PhoneNumberKit
-//
-//  Created by Roy Marmelstein on 07/11/2015.
-//  Copyright © 2021 Roy Marmelstein. All rights reserved.
-//
 
 #if canImport(UIKit)
 
-import Foundation
 import UIKit
 
-/// Custom text field that formats phone numbers
-open class PhoneNumberTextField: UITextField, UITextFieldDelegate {
+@available(iOS 11.0, *)
+public protocol CountryCodePickerDelegate: class {
+    func countryCodePickerViewControllerDidPickCountry(_ country: Country)
+}
+
+@available(iOS 11.0, *)
+public class CountryCodePickerViewController: UITableViewController {
+
+    lazy var searchController = UISearchController(searchResultsController: nil)
+
     public let phoneNumberKit: PhoneNumberKit
 
-    public lazy var flagButton = UIButton()
+    let commonCountryCodes: [String]
 
-    /// Override setText so number will be automatically formatted when setting text by code
-    open override var text: String? {
-        set {
-            if isPartialFormatterEnabled, let newValue = newValue {
-                let formattedNumber = partialFormatter.formatPartial(newValue)
-                super.text = formattedNumber
-            } else {
-                super.text = newValue
+    //var shouldRestoreNavigationBarToHidden = false
+
+    var hasCurrent = true
+    var hasCommon = true
+
+    lazy var allCountries = phoneNumberKit
+        .allCountries()
+        .compactMap({ Country(for: $0, with: self.phoneNumberKit) })
+        .sorted(by: { $0.name.caseInsensitiveCompare($1.name) == .orderedAscending })
+
+    lazy var countries: [[Country]] = {
+        let countries = allCountries.reduce([[Country]]()) { collection, country in
+                var collection = collection
+                guard var lastGroup = collection.last else { return [[country]] }
+                let lhs = lastGroup.first?.name.folding(options: .diacriticInsensitive, locale: nil)
+                let rhs = country.name.folding(options: .diacriticInsensitive, locale: nil)
+                if lhs?.first == rhs.first {
+                    lastGroup.append(country)
+                    collection[collection.count - 1] = lastGroup
+                } else {
+                    collection.append([country])
+                }
+                return collection
             }
-            NotificationCenter.default.post(name: UITextField.textDidChangeNotification, object: self)
+
+        let popular = commonCountryCodes.compactMap({ Country(for: $0, with: phoneNumberKit) })
+
+        var result: [[Country]] = []
+        // Note we should maybe use the user's current carrier's country code?
+        if hasCurrent, let current = Country(for: PhoneNumberKit.defaultRegionCode(), with: phoneNumberKit) {
+            result.append([current])
         }
-        get {
-            return super.text
+        hasCommon = hasCommon && !popular.isEmpty
+        if hasCommon {
+            result.append(popular)
         }
-    }
-
-    /// allows text to be set without formatting
-    open func setTextUnformatted(newValue: String?) {
-        super.text = newValue
-    }
-
-    private lazy var _defaultRegion: String = PhoneNumberKit.defaultRegionCode()
-
-    /// Override region to set a custom region. Automatically uses the default region code.
-    open var defaultRegion: String {
-        get {
-            return self._defaultRegion
-        }
-        @available(
-            *,
-            deprecated,
-            message: """
-                The setter of defaultRegion is deprecated,
-                please override defaultRegion in a subclass instead.
-            """
-        )
-        set {
-            self.partialFormatter.defaultRegion = newValue
-        }
-    }
-
-    public var withPrefix: Bool = true {
-        didSet {
-            self.partialFormatter.withPrefix = self.withPrefix
-            if self.withPrefix == false {
-                self.keyboardType = .numberPad
-            } else {
-                self.keyboardType = .phonePad
-            }
-            if self.withExamplePlaceholder {
-                self.updatePlaceholder()
-            }
-        }
-    }
-
-    public var withFlag: Bool = false {
-        didSet {
-            leftView = self.withFlag ? self.flagButton : nil
-            leftViewMode = self.withFlag ? .always : .never
-            self.updateFlag()
-        }
-    }
-
-    public var withExamplePlaceholder: Bool = false {
-        didSet {
-            if self.withExamplePlaceholder {
-                self.updatePlaceholder()
-            } else {
-                attributedPlaceholder = nil
-            }
-        }
-    }
-
-    #if compiler(>=5.1)
-    /// Available on iOS 13 and above just.
-    public var countryCodePlaceholderColor: UIColor = {
-        if #available(iOS 13.0, *) {
-            return .secondaryLabel
-        } else {
-            return UIColor(red: 0, green: 0, blue: 0.0980392, alpha: 0.22)
-        }
-    }() {
-        didSet {
-            self.updatePlaceholder()
-        }
-    }
-
-    /// Available on iOS 13 and above just.
-    public var numberPlaceholderColor: UIColor = {
-        if #available(iOS 13.0, *) {
-            return .tertiaryLabel
-        } else {
-            return UIColor(red: 0, green: 0, blue: 0.0980392, alpha: 0.22)
-        }
-    }() {
-        didSet {
-            self.updatePlaceholder()
-        }
-    }
-    #endif
-
-    private var _withDefaultPickerUI: Bool = false {
-        didSet {
-            if #available(iOS 11.0, *), flagButton.actions(forTarget: self, forControlEvent: .touchUpInside) == nil {
-                flagButton.addTarget(self, action: #selector(didPressFlagButton), for: .touchUpInside)
-            }
-        }
-    }
-
-    @available(iOS 11.0, *)
-    public var withDefaultPickerUI: Bool {
-        get { _withDefaultPickerUI }
-        set { _withDefaultPickerUI = newValue }
-    }
-
-    public var isPartialFormatterEnabled = true
-
-    public var maxDigits: Int? {
-        didSet {
-            self.partialFormatter.maxDigits = self.maxDigits
-        }
-    }
-
-    public private(set) lazy var partialFormatter: PartialFormatter = PartialFormatter(
-        phoneNumberKit: phoneNumberKit,
-        defaultRegion: defaultRegion,
-        withPrefix: withPrefix
-    )
-
-    let nonNumericSet: NSCharacterSet = {
-        var mutableSet = NSMutableCharacterSet.decimalDigit().inverted
-        mutableSet.remove(charactersIn: PhoneNumberConstants.plusChars)
-        mutableSet.remove(charactersIn: PhoneNumberConstants.pausesAndWaitsChars)
-        mutableSet.remove(charactersIn: PhoneNumberConstants.operatorChars)
-        return mutableSet as NSCharacterSet
+        return result + countries
     }()
 
-    private weak var _delegate: UITextFieldDelegate?
+    var filteredCountries: [Country] = []
 
-    open override var delegate: UITextFieldDelegate? {
-        get {
-            return self._delegate
-        }
-        set {
-            self._delegate = newValue
-        }
-    }
+    public weak var delegate: CountryCodePickerDelegate?
 
-    // MARK: Status
-
-    public var currentRegion: String {
-        return self.partialFormatter.currentRegion
-    }
-
-    public var nationalNumber: String {
-        let rawNumber = self.text ?? String()
-        return self.partialFormatter.nationalNumber(from: rawNumber)
-    }
-
-    public var isValidNumber: Bool {
-        let rawNumber = self.text ?? String()
-        do {
-            _ = try phoneNumberKit.parse(rawNumber, withRegion: currentRegion)
-            return true
-        } catch {
-            return false
-        }
-    }
+    lazy var cancelButton = UIBarButtonItem(barButtonSystemItem: .cancel, target: self, action: #selector(dismissAnimated))
 
     /**
-     Returns the current valid phone number.
-     - returns: PhoneNumber?
-     */
-    public var phoneNumber: PhoneNumber? {
-        guard let rawNumber = self.text else { return nil }
-        do {
-            return try phoneNumberKit.parse(rawNumber, withRegion: currentRegion)
-        } catch {
-            return nil
-        }
-    }
-
-    open override func layoutSubviews() {
-        if self.withFlag { // update the width of the flagButton automatically, iOS <13 doesn't handle this for you
-            let width = self.flagButton.systemLayoutSizeFitting(bounds.size).width
-            self.flagButton.frame.size.width = width
-        }
-        super.layoutSubviews()
-    }
-
-    // MARK: Lifecycle
-
-    /**
-     Init with a phone number kit instance. Because a PhoneNumberKit initialization is expensive,
-     you can pass a pre-initialized instance to avoid incurring perf penalties.
+     Init with a phone number kit instance. Because a PhoneNumberKit initialization is expensive you can must pass a pre-initialized instance to avoid incurring perf penalties.
 
      - parameter phoneNumberKit: A PhoneNumberKit instance to be used by the text field.
-
-     - returns: UITextfield
+     - parameter commonCountryCodes: An array of country codes to display in the section below the current region section. defaults to `PhoneNumberKit.CountryCodePicker.commonCountryCodes`
      */
-    public convenience init(withPhoneNumberKit phoneNumberKit: PhoneNumberKit) {
-        self.init(frame: .zero, phoneNumberKit: phoneNumberKit)
-        self.setup()
-    }
-
-    /**
-     Init with frame and phone number kit instance.
-
-     - parameter frame: UITextfield frame
-     - parameter phoneNumberKit: A PhoneNumberKit instance to be used by the text field.
-
-     - returns: UITextfield
-     */
-    public init(frame: CGRect, phoneNumberKit: PhoneNumberKit) {
+    public init(
+        phoneNumberKit: PhoneNumberKit,
+        commonCountryCodes: [String] = PhoneNumberKit.CountryCodePicker.commonCountryCodes)
+    {
         self.phoneNumberKit = phoneNumberKit
-        super.init(frame: frame)
-        self.setup()
+        self.commonCountryCodes = commonCountryCodes
+        super.init(style: .grouped)
+        self.commonInit()
     }
 
-    /**
-     Init with frame
-
-     - parameter frame: UITextfield F
-
-     - returns: UITextfield
-     */
-    public override init(frame: CGRect) {
+    required init?(coder aDecoder: NSCoder) {
         self.phoneNumberKit = PhoneNumberKit()
-        super.init(frame: frame)
-        self.setup()
+        self.commonCountryCodes = PhoneNumberKit.CountryCodePicker.commonCountryCodes
+        super.init(coder: aDecoder)
+        self.commonInit()
     }
 
-    /**
-     Init with coder
+    func commonInit() {
+        self.title = "Choose your country"
 
-     - parameter aDecoder: decoder
-
-     - returns: UITextfield
-     */
-    public required init(coder aDecoder: NSCoder) {
-        self.phoneNumberKit = PhoneNumberKit()
-        super.init(coder: aDecoder)!
-        self.setup()
+        tableView.register(Cell.self, forCellReuseIdentifier: Cell.reuseIdentifier)
+        searchController.searchResultsUpdater = self
+        searchController.obscuresBackgroundDuringPresentation = false
+        searchController.searchBar.backgroundColor = .clear
+        navigationItem.searchController = searchController
+        definesPresentationContext = true
     }
 
-    func setup() {
-        self.autocorrectionType = .no
-        self.keyboardType = .phonePad
-        super.delegate = self
-    }
-
-    func internationalPrefix(for countryCode: String) -> String? {
-        guard let countryCode = phoneNumberKit.countryCode(for: currentRegion)?.description else { return nil }
-        return "+" + countryCode
-    }
-
-    open func updateFlag() {
-        guard self.withFlag else { return }
-        let flagBase = UnicodeScalar("🇦").value - UnicodeScalar("A").value
-
-        let flag = self.currentRegion
-            .uppercased()
-            .unicodeScalars
-            .compactMap { UnicodeScalar(flagBase + $0.value)?.description }
-            .joined()
-
-        self.flagButton.setTitle(flag + " ", for: .normal)
-        let fontSize = (font ?? UIFont.preferredFont(forTextStyle: .body)).pointSize
-        self.flagButton.titleLabel?.font = UIFont.systemFont(ofSize: fontSize)
-    }
-
-    open func updatePlaceholder() {
-        guard self.withExamplePlaceholder else { return }
-        if isEditing, !(self.text ?? "").isEmpty { return } // No need to update a placeholder while the placeholder isn't showing
-
-        let format = self.withPrefix ? PhoneNumberFormat.international : .national
-        let example = self.phoneNumberKit.getFormattedExampleNumber(forCountry: self.currentRegion, withFormat: format, withPrefix: self.withPrefix) ?? "12345678"
-        let font = self.font ?? UIFont.preferredFont(forTextStyle: .body)
-        let ph = NSMutableAttributedString(string: example, attributes: [.font: font])
-
-        #if compiler(>=5.1)
-        if #available(iOS 13.0, *), self.withPrefix {
-            // because the textfield will automatically handle insert & removal of the international prefix we make the
-            // prefix darker to indicate non default behaviour to users, this behaviour currently only happens on iOS 13
-            // and above just because that is where we have access to label colors
-            let firstSpaceIndex = example.firstIndex(where: { $0 == " " }) ?? example.startIndex
-
-            ph.addAttribute(.foregroundColor, value: self.countryCodePlaceholderColor, range: NSRange(..<firstSpaceIndex, in: example))
-            ph.addAttribute(.foregroundColor, value: self.numberPlaceholderColor, range: NSRange(firstSpaceIndex..., in: example))
-        }
-        #endif
-
-        self.attributedPlaceholder = ph
-    }
-
-    @available(iOS 11.0, *)
-    @objc func didPressFlagButton() {
-        guard withDefaultPickerUI else { return }
-        let vc = CountryCodePickerViewController(phoneNumberKit: phoneNumberKit)
-        vc.delegate = self
-        if let nav = containingViewController?.navigationController, !PhoneNumberKit.CountryCodePicker.forceModalPresentation {
-            nav.pushViewController(vc, animated: true)
-        } else {
-            let nav = UINavigationController(rootViewController: vc)
-            containingViewController?.present(nav, animated: true)
+    public override func viewWillAppear(_ animated: Bool) {
+        super.viewWillAppear(animated)
+//        if let nav = navigationController {
+//            shouldRestoreNavigationBarToHidden = nav.isNavigationBarHidden
+//            nav.setNavigationBarHidden(false, animated: true)
+//        }
+        if let nav = navigationController, nav.isBeingPresented && nav.viewControllers.count == 1 {
+            navigationItem.setRightBarButton(cancelButton, animated: true)
         }
     }
 
-    /// containingViewController looks at the responder chain to find the view controller nearest to itself
-    var containingViewController: UIViewController? {
-        var responder: UIResponder? = self
-        while !(responder is UIViewController) && responder != nil {
-            responder = responder?.next
+    public override func viewWillDisappear(_ animated: Bool) {
+        super.viewWillDisappear(animated)
+        //navigationController?.setNavigationBarHidden(shouldRestoreNavigationBarToHidden, animated: true)
+    }
+
+    @objc func dismissAnimated() {
+        dismiss(animated: true)
+    }
+
+    func country(for indexPath: IndexPath) -> Country {
+        isFiltering ? filteredCountries[indexPath.row] : countries[indexPath.section][indexPath.row]
+    }
+
+    public override func numberOfSections(in tableView: UITableView) -> Int {
+        isFiltering ? 1 : countries.count
+    }
+
+    public override func tableView(_ tableView: UITableView, numberOfRowsInSection section: Int) -> Int {
+        isFiltering ? filteredCountries.count : countries[section].count
+    }
+
+    public override func tableView(_ tableView: UITableView, cellForRowAt indexPath: IndexPath) -> UITableViewCell {
+        let cell = tableView.dequeueReusableCell(withIdentifier: Cell.reuseIdentifier, for: indexPath)
+        let country = self.country(for: indexPath)
+
+        cell.textLabel?.text = country.prefix + " " + country.flag
+        cell.detailTextLabel?.text = country.name
+
+        cell.textLabel?.font = .preferredFont(forTextStyle: .callout)
+        cell.detailTextLabel?.font = .preferredFont(forTextStyle: .body)
+
+        return cell
+    }
+
+    public override func tableView(_ tableView: UITableView, titleForHeaderInSection section: Int) -> String? {
+        if isFiltering {
+            return nil
+        } else if section == 0, hasCurrent {
+            return "Current"
+        } else if section == 0, !hasCurrent, hasCommon {
+            return "Common"
+        } else if section == 1, hasCurrent, hasCommon {
+            return "Common"
         }
-        return (responder as? UIViewController)
+        return countries[section].first?.name.first.map(String.init)
     }
 
-
-    // MARK: Phone number formatting
-
-    /**
-     *  To keep the cursor position, we find the character immediately after the cursor and count the number of times it repeats in the remaining string as this will remain constant in every kind of editing.
-     */
-
-    internal struct CursorPosition {
-        let numberAfterCursor: String
-        let repetitionCountFromEnd: Int
-    }
-
-    internal func extractCursorPosition() -> CursorPosition? {
-        var repetitionCountFromEnd = 0
-        // Check that there is text in the UITextField
-        guard let text = text, let selectedTextRange = selectedTextRange else {
+    public override func sectionIndexTitles(for tableView: UITableView) -> [String]? {
+        guard !isFiltering else {
             return nil
         }
-        let textAsNSString = text as NSString
-        let cursorEnd = offset(from: beginningOfDocument, to: selectedTextRange.end)
-        // Look for the next valid number after the cursor, when found return a CursorPosition struct
-        for i in cursorEnd..<textAsNSString.length {
-            let cursorRange = NSRange(location: i, length: 1)
-            let candidateNumberAfterCursor: NSString = textAsNSString.substring(with: cursorRange) as NSString
-            if candidateNumberAfterCursor.rangeOfCharacter(from: self.nonNumericSet as CharacterSet).location == NSNotFound {
-                for j in cursorRange.location..<textAsNSString.length {
-                    let candidateCharacter = textAsNSString.substring(with: NSRange(location: j, length: 1))
-                    if candidateCharacter == candidateNumberAfterCursor as String {
-                        repetitionCountFromEnd += 1
-                    }
-                }
-                return CursorPosition(numberAfterCursor: candidateNumberAfterCursor as String, repetitionCountFromEnd: repetitionCountFromEnd)
-            }
+        var titles: [String] = []
+        if hasCurrent {
+            titles.append("•") // NOTE: SFSymbols are not supported otherwise we would use 􀋑
         }
-        return nil
-    }
-
-    // Finds position of previous cursor in new formatted text
-    internal func selectionRangeForNumberReplacement(textField: UITextField, formattedText: String) -> NSRange? {
-        let textAsNSString = formattedText as NSString
-        var countFromEnd = 0
-        guard let cursorPosition = extractCursorPosition() else {
-            return nil
+        if hasCommon {
+            titles.append("★") // This is a classic unicode star
         }
-
-        for i in stride(from: textAsNSString.length - 1, through: 0, by: -1) {
-            let candidateRange = NSRange(location: i, length: 1)
-            let candidateCharacter = textAsNSString.substring(with: candidateRange)
-            if candidateCharacter == cursorPosition.numberAfterCursor {
-                countFromEnd += 1
-                if countFromEnd == cursorPosition.repetitionCountFromEnd {
-                    return candidateRange
-                }
-            }
-        }
-
-        return nil
-    }
-
-    open func textField(_ textField: UITextField, shouldChangeCharactersIn range: NSRange, replacementString string: String) -> Bool {
-        // This allows for the case when a user autocompletes a phone number:
-        if range == NSRange(location: 0, length: 0) && string.isBlank {
-            return true
-        }
-
-        guard let text = text else {
-            return false
-        }
-
-        // allow delegate to intervene
-        guard self._delegate?.textField?(textField, shouldChangeCharactersIn: range, replacementString: string) ?? true else {
-            return false
-        }
-        guard self.isPartialFormatterEnabled else {
-            return true
-        }
-
-        let textAsNSString = text as NSString
-        let changedRange = textAsNSString.substring(with: range) as NSString
-        let modifiedTextField = textAsNSString.replacingCharacters(in: range, with: string)
-
-        let filteredCharacters = modifiedTextField.filter {
-            String($0).rangeOfCharacter(from: (textField as! PhoneNumberTextField).nonNumericSet as CharacterSet) == nil
-        }
-        let rawNumberString = String(filteredCharacters)
-
-        let formattedNationalNumber = self.partialFormatter.formatPartial(rawNumberString as String)
-        var selectedTextRange: NSRange?
-
-        let nonNumericRange = (changedRange.rangeOfCharacter(from: self.nonNumericSet as CharacterSet).location != NSNotFound)
-        if range.length == 1, string.isEmpty, nonNumericRange {
-            selectedTextRange = self.selectionRangeForNumberReplacement(textField: textField, formattedText: modifiedTextField)
-            textField.text = modifiedTextField
-        } else {
-            selectedTextRange = self.selectionRangeForNumberReplacement(textField: textField, formattedText: formattedNationalNumber)
-            textField.text = formattedNationalNumber
-        }
-        sendActions(for: .editingChanged)
-        if let selectedTextRange = selectedTextRange, let selectionRangePosition = textField.position(from: beginningOfDocument, offset: selectedTextRange.location) {
-            let selectionRange = textField.textRange(from: selectionRangePosition, to: selectionRangePosition)
-            textField.selectedTextRange = selectionRange
-        }
-
-        // we change the default region to be the one most recently typed
-        self._defaultRegion = self.currentRegion
-        self.partialFormatter.defaultRegion = self.currentRegion
-        self.updateFlag()
-        self.updatePlaceholder()
-
-        return false
-    }
-
-    // MARK: UITextfield Delegate
-
-    open func textFieldShouldBeginEditing(_ textField: UITextField) -> Bool {
-        return self._delegate?.textFieldShouldBeginEditing?(textField) ?? true
-    }
-
-    open func textFieldDidBeginEditing(_ textField: UITextField) {
-        if self.withExamplePlaceholder, self.withPrefix, let countryCode = phoneNumberKit.countryCode(for: currentRegion)?.description, (text ?? "").isEmpty {
-            text = "+" + countryCode + " "
-        }
-        self._delegate?.textFieldDidBeginEditing?(textField)
-    }
-
-    open func textFieldShouldEndEditing(_ textField: UITextField) -> Bool {
-        return self._delegate?.textFieldShouldEndEditing?(textField) ?? true
-    }
-
-    open func textFieldDidEndEditing(_ textField: UITextField) {
-        updateTextFieldDidEndEditing(textField)
-        self._delegate?.textFieldDidEndEditing?(textField)
-    }
-
-    @available (iOS 10.0, tvOS 10.0, *)
-    open func textFieldDidEndEditing(_ textField: UITextField, reason: UITextField.DidEndEditingReason) {
-        updateTextFieldDidEndEditing(textField)
-        if let _delegate = _delegate {
-            if (_delegate.responds(to: #selector(textFieldDidEndEditing(_:reason:)))) {
-                _delegate.textFieldDidEndEditing?(textField, reason: reason)
-            } else {
-                _delegate.textFieldDidEndEditing?(textField)
-            }
+        return titles + countries.suffix(countries.count - titles.count).map { group in
+            group.first?.name.first
+                .map(String.init)?
+                .folding(options: .diacriticInsensitive, locale: nil) ?? ""
         }
     }
 
-    open func textFieldShouldClear(_ textField: UITextField) -> Bool {
-        return self._delegate?.textFieldShouldClear?(textField) ?? true
+    public override func tableView(_ tableView: UITableView, didSelectRowAt indexPath: IndexPath) {
+        let country = self.country(for: indexPath)
+        delegate?.countryCodePickerViewControllerDidPickCountry(country)
+        tableView.deselectRow(at: indexPath, animated: true)
+    }
+}
+
+@available(iOS 11.0, *)
+extension CountryCodePickerViewController: UISearchResultsUpdating {
+
+    var isFiltering: Bool {
+        searchController.isActive && !isSearchBarEmpty
     }
 
-    open func textFieldShouldReturn(_ textField: UITextField) -> Bool {
-        return self._delegate?.textFieldShouldReturn?(textField) ?? true
+    var isSearchBarEmpty: Bool {
+        searchController.searchBar.text?.isEmpty ?? true
     }
 
-    private func updateTextFieldDidEndEditing(_ textField: UITextField) {
-        if self.withExamplePlaceholder, self.withPrefix, let countryCode = phoneNumberKit.countryCode(for: currentRegion)?.description,
-            let text = textField.text,
-            text == internationalPrefix(for: countryCode) {
-            textField.text = ""
-            sendActions(for: .editingChanged)
-            self.updateFlag()
-            self.updatePlaceholder()
+    public func updateSearchResults(for searchController: UISearchController) {
+        let searchText = searchController.searchBar.text ?? ""
+        filteredCountries = allCountries.filter { country in
+            country.name.lowercased().contains(searchText.lowercased()) ||
+                country.code.lowercased().contains(searchText.lowercased()) ||
+                country.prefix.lowercased().contains(searchText.lowercased())
+        }
+        tableView.reloadData()
+    }
+}
+
+
+// MARK: Types
+
+@available(iOS 11.0, *)
+public extension CountryCodePickerViewController {
+
+    class Cell: UITableViewCell {
+
+        static let reuseIdentifier = "Cell"
+
+        override init(style: UITableViewCell.CellStyle, reuseIdentifier: String?) {
+            super.init(style: .value2, reuseIdentifier: Self.reuseIdentifier)
+        }
+
+        required init?(coder: NSCoder) {
+            fatalError("init(coder:) has not been implemented")
         }
     }
 }
 
 @available(iOS 11.0, *)
-extension PhoneNumberTextField: CountryCodePickerDelegate {
+public struct Country {
+    public var code: String
+    public var flag: String
+    public var name: String
+    public var prefix: String
 
-    public func countryCodePickerViewControllerDidPickCountry(_ country: Country) {
-        text = isEditing ? "+" + country.prefix : ""
-        _defaultRegion = country.code
-        partialFormatter.defaultRegion = country.code
-        updateFlag()
-        updatePlaceholder()
+    init?(for countryCode: String, with phoneNumberKit: PhoneNumberKit) {
+        let flagBase = UnicodeScalar("🇦").value - UnicodeScalar("A").value
+        guard
+            let name = (Locale.current as NSLocale).localizedString(forCountryCode: countryCode),
+            let prefix = phoneNumberKit.countryCode(for: countryCode)?.description
+        else {
+            return nil
+        }
 
-        if let nav = containingViewController?.navigationController, !PhoneNumberKit.CountryCodePicker.forceModalPresentation {
-            nav.popViewController(animated: true)
-        } else {
-            containingViewController?.dismiss(animated: true)
+        self.code = countryCode
+        self.name = name
+        self.prefix = "+" + prefix
+        self.flag = ""
+        countryCode.uppercased().unicodeScalars.forEach {
+            if let scaler = UnicodeScalar(flagBase + $0.value) {
+                flag.append(String(describing: scaler))
+            }
+        }
+        if flag.count != 1 { // Failed to initialize a flag ... use an empty string
+            return nil
         }
     }
-}
-
-extension String {
-  var isBlank: Bool {
-    return allSatisfy({ $0.isWhitespace })
-  }
 }
 
 #endif
